@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"os"
 
-	"banking-backend/auth" // Import the new auth package
+	"banking-backend/auth"
 
 	_ "github.com/lib/pq"
 )
@@ -37,19 +37,25 @@ func main() {
 	// Create the auth environment
 	authEnv := &auth.Env{DB: db}
 
+	// Create a new rate limiter
+	rateLimiter := auth.NewRateLimiter()
+
+	// Create a new ServeMux
+	mux := http.NewServeMux()
+
 	// Define handlers
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Welcome to the Banking System!")
 	})
 
 	// Auth routes
-	http.HandleFunc("/signup", authEnv.SignupHandler)
-	http.HandleFunc("/login", authEnv.LoginHandler)
-	http.Handle("/change-password", auth.AuthMiddleware(http.HandlerFunc(authEnv.ChangePasswordHandler)))
+	mux.Handle("/signup", auth.ValidateSignupRequest(http.HandlerFunc(authEnv.SignupHandler)))
+	mux.Handle("/login", rateLimiter.Middleware(http.HandlerFunc(authEnv.LoginHandler)))
+	mux.Handle("/change-password", auth.AuthenticationMiddleware(http.HandlerFunc(authEnv.ChangePasswordHandler)))
 
 	// Start the HTTP server
 	log.Println("Starting server on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe(":8080", auth.Logger(mux)); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -2,11 +2,11 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -17,11 +17,12 @@ import (
 // --- Models ---
 
 type User struct {
-	ID               string `json:"id"`
-	DNI              string `json:"dni"`
-	GeneratedPinHash string `json:"-"`
-	FullName         string `json:"full_name"`
-	Email            string `json:"email"`
+	ID               string    `json:"id"`
+	DNI              string    `json:"dni"`
+	GeneratedPinHash string    `json:"-"`
+	FullName         string    `json:"full_name"`
+	Email            string    `json:"email"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type SignupRequest struct {
@@ -35,9 +36,14 @@ type LoginRequest struct {
 	Pin string `json:"pin"`
 }
 
+type ChangePasswordRequest struct {
+	OldPin string `json:"old_pin"`
+	NewPin string `json:"new_pin"`
+}
+
 type Claims struct {
 	UserID string `json:"user_id"`
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
 // --- Database ---
@@ -46,26 +52,52 @@ type DB struct {
 	*sql.DB
 }
 
-func (db *DB) CreateUser(user *User, pinHash string) (string, error) {
+func (db *DB) CreateUser(ctx context.Context, user *User, pinHash string) (string, error) {
 	var id string
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("could not begin transaction: %w", err)
+	}
+	defer func(tx *sql.Tx) {
+		_ = tx.Rollback()
+	}(tx) // Rollback in case of an error
+
 	query := `INSERT INTO users (dni, generated_pin_hash, full_name, email)
 			  VALUES ($1, $2, $3, $4) RETURNING id`
-	err := db.QueryRow(query, user.DNI, pinHash, user.FullName, user.Email).Scan(&id)
+	err = tx.QueryRowContext(ctx, query, user.DNI, pinHash, user.FullName, user.Email).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("could not create user: %w", err)
 	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("could not commit transaction: %w", err)
+	}
+
 	return id, nil
 }
 
 func (db *DB) GetUserByDNI(dni string) (*User, error) {
 	user := &User{}
-	query := `SELECT id, dni, generated_pin_hash, full_name, email FROM users WHERE dni = $1`
-	err := db.QueryRow(query, dni).Scan(&user.ID, &user.DNI, &user.GeneratedPinHash, &user.FullName, &user.Email)
+	query := `SELECT id, dni, generated_pin_hash, full_name, email, updated_at FROM users WHERE dni = $1`
+	err := db.QueryRow(query, dni).Scan(&user.ID, &user.DNI, &user.GeneratedPinHash, &user.FullName, &user.Email, &user.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("could not get user by dni: %w", err)
+	}
+	return user, nil
+}
+
+func (db *DB) GetUserByID(id string) (*User, error) {
+	user := &User{}
+	query := `SELECT id, dni, generated_pin_hash, full_name, email, updated_at FROM users WHERE id = $1`
+	err := db.QueryRow(query, id).Scan(&user.ID, &user.DNI, &user.GeneratedPinHash, &user.FullName, &user.Email, &user.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("could not get user by id: %w", err)
 	}
 	return user, nil
 }
@@ -81,24 +113,29 @@ func (db *DB) UpdatePinHash(userID, newPinHash string) error {
 
 // --- JWT ---
 
-var jwtKey = []byte("my_secret_key") // In production, use a secure, configured key
+func getJWTKey() []byte {
+	key := os.Getenv("JWT_SECRET")
+	if key == "" {
+		return []byte("my_secret_key") // Default key for development
+	}
+	return []byte(key)
+}
 
 func GenerateJWT(userID string) (string, error) {
-	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := &Claims{
 		UserID: userID,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: expirationTime.Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtKey)
+	return token.SignedString(getJWTKey())
 }
 
 func ValidateJWT(tokenStr string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-		return jwtKey, nil
+		return getJWTKey(), nil
 	})
 	if err != nil {
 		return nil, err
@@ -116,134 +153,126 @@ type Env struct {
 }
 
 func (env *Env) SignupHandler(w http.ResponseWriter, r *http.Request) {
-	var req SignupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	req, ok := r.Context().Value(signupRequestKey).(SignupRequest)
+	if !ok {
+		RespondWithError(w, http.StatusInternalServerError, "Could not get signup request from context")
 		return
 	}
 
-	pin, err := generateRandomPIN(6)
+	pin, pinHash, err := GeneratePINAndHash()
 	if err != nil {
-		http.Error(w, "Failed to generate PIN", http.StatusInternalServerError)
-		return
-	}
-
-	pinHash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, "Failed to hash PIN", http.StatusInternalServerError)
+		RespondWithError(w, http.StatusInternalServerError, "Failed to generate PIN")
 		return
 	}
 
 	db := &DB{env.DB}
 	user := &User{DNI: req.DNI, FullName: req.FullName, Email: req.Email}
-	userID, err := db.CreateUser(user, string(pinHash))
+	userID, err := db.CreateUser(r.Context(), user, pinHash)
 	if err != nil {
-		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		RespondWithError(w, http.StatusInternalServerError, "Failed to create user")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"user_id": userID, "pin": pin})
+	JSON(w, http.StatusCreated, map[string]string{"user_id": userID, "pin": pin})
 }
 
 func (env *Env) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		RespondWithError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	db := &DB{env.DB}
 	user, err := db.GetUserByDNI(req.DNI)
 	if err != nil || user == nil {
-		http.Error(w, "Invalid DNI or PIN", http.StatusUnauthorized)
+		RespondWithError(w, http.StatusUnauthorized, "Invalid DNI or PIN")
 		return
 	}
 
 	err = bcrypt.CompareHashAndPassword([]byte(user.GeneratedPinHash), []byte(req.Pin))
 	if err != nil {
-		http.Error(w, "Invalid DNI or PIN", http.StatusUnauthorized)
+		RespondWithError(w, http.StatusUnauthorized, "Invalid DNI or PIN")
 		return
 	}
 
 	tokenString, err := GenerateJWT(user.ID)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		RespondWithError(w, http.StatusInternalServerError, "Failed to generate token")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+	err = json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+	if err != nil {
+		return
+	}
 }
 
 func (env *Env) ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
-	userID, ok := r.Context().Value("userID").(string)
-	if !ok || userID == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	userID, err := GetUserIDFromContext(r)
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
-	newPin, err := generateRandomPIN(6)
-	if err != nil {
-		http.Error(w, "Failed to generate new PIN", http.StatusInternalServerError)
+	var req ChangePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	newPinHash, err := bcrypt.GenerateFromPassword([]byte(newPin), bcrypt.DefaultCost)
+	pin, pinHash, err := GeneratePINAndHash()
 	if err != nil {
-		http.Error(w, "Failed to hash new PIN", http.StatusInternalServerError)
+		RespondWithError(w, http.StatusInternalServerError, "Failed to generate new PIN")
 		return
 	}
 
 	db := &DB{env.DB}
-	err = db.UpdatePinHash(userID, string(newPinHash))
-	if err != nil {
-		http.Error(w, "Failed to update PIN", http.StatusInternalServerError)
+	user, err := db.GetUserByID(userID)
+	if err != nil || user == nil {
+		RespondWithError(w, http.StatusNotFound, "User not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"pin": newPin})
+	err = bcrypt.CompareHashAndPassword([]byte(user.GeneratedPinHash), []byte(req.OldPin))
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "Invalid old PIN")
+		return
+	}
+
+	err = db.UpdatePinHash(userID, pinHash)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Failed to update PIN")
+		return
+	}
+
+	JSON(w, http.StatusOK, map[string]string{"message": "PIN updated successfully", "new_pin": pin})
 }
 
 // --- Middleware ---
 
-func AuthMiddleware(next http.Handler) http.Handler {
+func AuthenticationMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			RespondWithError(w, http.StatusUnauthorized, "Authorization header required")
 			return
 		}
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		if tokenString == authHeader {
-			http.Error(w, "Invalid token format", http.StatusUnauthorized)
+			RespondWithError(w, http.StatusUnauthorized, "Invalid token format")
 			return
 		}
 
 		claims, err := ValidateJWT(tokenString)
 		if err != nil {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			RespondWithError(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), "userID", claims.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// --- Helpers ---
-
-func generateRandomPIN(n int) (string, error) {
-	const digits = "0123456789"
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("could not generate random bytes: %w", err)
-	}
-	for i := range b {
-		b[i] = digits[int(b[i])%len(digits)]
-	}
-	return string(b), nil
 }
