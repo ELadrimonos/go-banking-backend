@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 
+	"banking-backend/account"
 	"banking-backend/auth"
 
 	_ "github.com/lib/pq"
@@ -36,6 +37,7 @@ func main() {
 
 	// Create the auth environment
 	authEnv := &auth.Env{DB: db}
+	accountEnv := &account.Env{DB: db}
 
 	// Create a new rate limiter
 	rateLimiter := auth.NewRateLimiter()
@@ -52,6 +54,10 @@ func main() {
 	mux.Handle("/signup", auth.ValidateSignupRequest(http.HandlerFunc(authEnv.SignupHandler)))
 	mux.Handle("/login", rateLimiter.Middleware(http.HandlerFunc(authEnv.LoginHandler)))
 	mux.Handle("/change-password", auth.AuthenticationMiddleware(http.HandlerFunc(authEnv.ChangePasswordHandler)))
+
+	// Account routes
+	mux.Handle("/accounts", auth.AuthenticationMiddleware(http.HandlerFunc(accountEnv.GetAccountsHandler)))
+	mux.Handle("/create-account", auth.AuthenticationMiddleware(http.HandlerFunc(accountEnv.CreateAccountHandler)))
 
 	// Start the HTTP server
 	log.Println("Starting server on :8080")
