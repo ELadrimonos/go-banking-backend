@@ -72,6 +72,29 @@ func (db *DB) GetAccountsByUserID(userID string) ([]*Account, error) {
 	return accounts, nil
 }
 
+func (db *DB) GetAccountByAccountNumber(accountNumber string) (*Account, error) {
+	account := &Account{}
+	query := `SELECT id, user_id, account_number, balance, currency, account_type, created_at, updated_at
+			   FROM accounts WHERE account_number = $1`
+	err := db.QueryRow(query, accountNumber).Scan(&account.ID, &account.UserID, &account.AccountNumber, &account.Balance, &account.Currency, &account.AccountType, &account.CreatedAt, &account.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("could not get account by account number: %w", err)
+	}
+	return account, nil
+}
+
+func (db *DB) UpdateAccountBalance(accountID string, newBalance float64) error {
+	query := `UPDATE accounts SET balance = $1, updated_at = NOW() WHERE id = $2`
+	_, err := db.Exec(query, newBalance, accountID)
+	if err != nil {
+		return fmt.Errorf("could not update account balance: %w", err)
+	}
+	return nil
+}
+
 // --- Handlers ---
 
 type Env struct {
