@@ -3,12 +3,14 @@ package main
 import (
 	"banking-backend/account"
 	"banking-backend/auth"
+	"banking-backend/currency"
 	"banking-backend/transactions"
 	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	_ "github.com/lib/pq"
 )
@@ -62,6 +64,33 @@ func main() {
 
 	// Transactions routes
 	mux.Handle("/deposit", auth.AuthenticationMiddleware(http.HandlerFunc(transactionsEnv.DepositHandler)))
+
+	// Currency conversion route
+	mux.HandleFunc("/convert", func(w http.ResponseWriter, r *http.Request) {
+		from := r.URL.Query().Get("from")
+		to := r.URL.Query().Get("to")
+		amountStr := r.URL.Query().Get("amount")
+
+		if from == "" || to == "" || amountStr == "" {
+			http.Error(w, "Missing required query parameters: from, to, amount", http.StatusBadRequest)
+			return
+		}
+
+		amount, err := strconv.ParseFloat(amountStr, 64)
+		if err != nil {
+			http.Error(w, "Invalid amount", http.StatusBadRequest)
+			return
+		}
+
+		rate, err := currency.GetRate(from, to)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to get exchange rate: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		convertedAmount := amount * rate
+		fmt.Fprintf(w, "%.2f %s is %.2f %s", amount, from, convertedAmount, to)
+	})
 
 	// Start the HTTP server
 	log.Println("Starting server on :8080")

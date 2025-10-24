@@ -29,5 +29,11 @@ services:
     ports:
       - "8080:8080"
 
+  frankfurter:
+    image: lineofflight/frankfurter
+    platform: linux/amd64
+    ports:
+      - "8081:8080"
+
 volumes:
   postgres_data:

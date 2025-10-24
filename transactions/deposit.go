@@ -2,12 +2,12 @@ package transactions
 
 import (
 	"banking-backend/account"
+	"banking-backend/auth"
+	"banking-backend/currency"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"banking-backend/auth"
 )
 
 // --- Models ---
@@ -59,10 +59,12 @@ func (env *Env) DepositHandler(w http.ResponseWriter, r *http.Request) {
 	depositedAmount := req.Amount
 	// Convert currency if necessary
 	if req.Currency != acc.Currency {
-		// In a real-world application, you would use a currency conversion API
-		// For now, we'll use a hardcoded conversion rate
-		conversionRate := 0.93 // Example: 1 USD to 0.93 EUR
-		depositedAmount = req.Amount * conversionRate
+		rate, err := currency.GetRate(req.Currency, acc.Currency)
+		if err != nil {
+			auth.RespondWithError(w, http.StatusInternalServerError, "Failed to get exchange rate")
+			return
+		}
+		depositedAmount = req.Amount * rate
 	}
 
 	// Update the account balance
