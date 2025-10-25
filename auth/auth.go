@@ -121,15 +121,34 @@ func getJWTKey() []byte {
 	return []byte(key)
 }
 
-func GenerateJWT(userID string) (string, error) {
-	claims := &Claims{
+func GenerateTokens(userID string) (string, string, error) {
+	// Generate access token
+	accessTokenClaims := &Claims{
 		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)), // Access token expires in 15 minutes
 		},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(getJWTKey())
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessTokenClaims)
+	accessTokenString, err := accessToken.SignedString(getJWTKey())
+	if err != nil {
+		return "", "", err
+	}
+
+	// Generate refresh token
+	refreshTokenClaims := &Claims{
+		UserID: userID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)), // Refresh token expires in 7 days
+		},
+	}
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshTokenClaims)
+	refreshTokenString, err := refreshToken.SignedString(getJWTKey())
+	if err != nil {
+		return "", "", err
+	}
+
+	return accessTokenString, refreshTokenString, nil
 }
 
 func ValidateJWT(tokenStr string) (*Claims, error) {
@@ -150,6 +169,11 @@ func ValidateJWT(tokenStr string) (*Claims, error) {
 
 type Env struct {
 	DB *sql.DB
+}
+
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 func (env *Env) SignupHandler(w http.ResponseWriter, r *http.Request) {
@@ -196,17 +220,55 @@ func (env *Env) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokenString, err := GenerateJWT(user.ID)
+	accessToken, refreshToken, err := GenerateTokens(user.ID)
 	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, "Failed to generate token")
+		RespondWithError(w, http.StatusInternalServerError, "Failed to generate tokens")
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+	err = json.NewEncoder(w).Encode(TokenResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+	})
 	if err != nil {
 		return
 	}
+}
+
+func (env *Env) RefreshHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondWithError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	claims, err := ValidateJWT(req.RefreshToken)
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "Invalid refresh token")
+		return
+	}
+
+	accessToken, refreshToken, err := GenerateTokens(claims.UserID)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, "Failed to generate tokens")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	err = json.NewEncoder(w).Encode(TokenResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+	})
+	if err != nil {
+		return
+	}
+}
+
+func (env *Env) StatusHandler(w http.ResponseWriter, r *http.Request) {
+	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (env *Env) ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
