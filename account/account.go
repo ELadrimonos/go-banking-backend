@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"banking-backend/auth"
@@ -169,11 +171,13 @@ func (env *Env) GetAccountsHandler(w http.ResponseWriter, r *http.Request) {
 
 func generateAccountNumber() (string, error) {
 	// Generate a random 10-digit account number
-	var b [10]byte
-	_, err := rand.Read(b[:])
-	if err != nil {
-		return "", err
+	var builder strings.Builder
+	for i := 0; i < 10; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(10))
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(n.String())
 	}
-	return fmt.Sprintf("%d", b),
-		nil
+	return builder.String(), nil
 }
