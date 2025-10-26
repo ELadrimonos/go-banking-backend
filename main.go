@@ -59,6 +59,7 @@ func main() {
 	mux.Handle("/change-password", auth.AuthenticationMiddleware(http.HandlerFunc(authEnv.ChangePasswordHandler)))
 	mux.Handle("/refresh", http.HandlerFunc(authEnv.RefreshHandler))
 	mux.Handle("/status", auth.AuthenticationMiddleware(http.HandlerFunc(authEnv.StatusHandler)))
+	mux.Handle("/user", auth.AuthenticationMiddleware(http.HandlerFunc(authEnv.GetUserHandler)))
 
 	// Account routes
 	mux.Handle("/accounts", auth.AuthenticationMiddleware(http.HandlerFunc(accountEnv.GetAccountsHandler)))
