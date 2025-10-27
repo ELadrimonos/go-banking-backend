@@ -157,7 +157,7 @@ func ValidateJWT(tokenStr string) (*Claims, error) {
 		return getJWTKey(), nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("token has expired, please log in again")
 	}
 	if !token.Valid {
 		return nil, fmt.Errorf("invalid token")
@@ -330,7 +330,7 @@ func AuthenticationMiddleware(next http.Handler) http.Handler {
 
 		claims, err := ValidateJWT(tokenString)
 		if err != nil {
-			RespondWithError(w, http.StatusUnauthorized, "Invalid token")
+			RespondWithError(w, http.StatusUnauthorized, "Token has expired, please log in again")
 			return
 		}
 
