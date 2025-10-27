@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"banking-backend/dni"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -48,12 +49,9 @@ func validateSignupData(req SignupRequest) error {
 	return nil
 }
 
-// TODO Use own library for DNI validation
-func validateDNI(dni string) error {
-	if len(dni) != 9 {
-		return fmt.Errorf("invalid DNI length")
-	}
-	return nil
+func validateDNI(dniValue string) error {
+	d := dni.DNI(dniValue)
+	return d.IsValid()
 }
 
 func validateFullName(fullName string) error {
