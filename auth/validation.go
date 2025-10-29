@@ -1,12 +1,14 @@
 package auth
 
 import (
-	"banking-backend/dni"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
+
+	"github.com/ELadrimonos/national-document-validator/validators"
+	"github.com/ELadrimonos/national-document-validator/validators/es"
 )
 
 // --- Context Keys ---
@@ -49,9 +51,17 @@ func validateSignupData(req SignupRequest) error {
 	return nil
 }
 
+// TODO Get user country
 func validateDNI(dniValue string) error {
-	d := dni.DNI(dniValue)
-	return d.IsValid()
+	validator := validators.NewValidator()
+	validator.Register("es", &es.ESValidator{})
+
+	err := validator.Validate("es", dniValue)
+	if err != nil {
+		return fmt.Errorf("invalid DNI: %w", err)
+	}
+
+	return nil
 }
 
 func validateFullName(fullName string) error {
